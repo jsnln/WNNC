@@ -2,7 +2,7 @@
 #include <vector>
 #include "torch_treecode_cpu.h"
 #include <iostream>
-
+#include <omp.h>
 
 // inplace elementwise addition to a consective block of memory defined by SPATIAL_DIM
 // user is responsible for making sure dim == 3
@@ -215,6 +215,7 @@ void scatter_point_attrs_to_nodes_leaf_cpu_wrapper(
         signedindex_t attr_dim,
         signedindex_t num_nodes) {
 
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
         scatter_point_attrs_to_nodes_leaf_cpu_kernel<scalar_t>(
@@ -320,6 +321,7 @@ void scatter_point_attrs_to_nodes_nonleaf_cpu_wrapper(
 
         signedindex_t attr_dim,
         signedindex_t num_nodes) {
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
         scatter_point_attrs_to_nodes_nonleaf_cpu_kernel<scalar_t>(
@@ -389,6 +391,7 @@ void find_next_to_scatter_cpu_wrapper(
         const signedindex_t* node2point_index,
         signedindex_t num_nodes
     ) {
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
         find_next_to_scatter_cpu_kernel<scalar_t>(
@@ -600,6 +603,7 @@ void multiply_by_A_cpu_wrapper(
         scalar_t* out_attrs,           // [N,]
         signedindex_t num_queries) {
 
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
         multiply_by_A_cpu_kernel<scalar_t>(
@@ -754,6 +758,7 @@ void multiply_by_AT_cpu_wrapper(
         scalar_t* out_attrs,           // [N, 3]
         signedindex_t num_queries) {
 
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
         multiply_by_AT_cpu_kernel<scalar_t>(
@@ -909,6 +914,7 @@ void multiply_by_G_cpu_wrapper(
         const signedindex_t* num_points_in_node,
         scalar_t* out_attrs,           // [N, 3]
         signedindex_t num_queries) {
+    omp_set_num_threads(20);
     #pragma omp parallel for
     for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
         multiply_by_G_cpu_kernel<scalar_t>(
