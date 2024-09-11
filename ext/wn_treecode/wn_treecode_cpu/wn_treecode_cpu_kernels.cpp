@@ -1,57 +1,81 @@
-#include <torch/extension.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <vector>
-#include "torch_treecode_cuda.h"
-#include <iostream>
+/*
+MIT License
 
+Copyright (c) 2024 Siyou Lin, Zuoqiang Shi, Yebin Liu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+
+#include "wn_treecode_cpu.h"
+#include <assert.h>
+#include <cmath>
+#include <vector>
+#include <iostream>
+#include <omp.h>
 
 // inplace elementwise addition to a consective block of memory defined by SPATIAL_DIM
 // user is responsible for making sure dim == 3
 template<typename scalar_t>
-__forceinline__ __device__ void add_vec_(scalar_t* dst, const scalar_t* src, signedindex_t n_dims) {
+void add_vec_(scalar_t* dst, const scalar_t* src, signedindex_t n_dims) {
     for (signedindex_t d = 0; d < n_dims; d++) { dst[d] += src[d]; }
 }
 template<typename scalar_t>
-__forceinline__ __device__ void add_vec_(scalar_t* dst, const scalar_t* src, scalar_t scale, signedindex_t n_dims) {
+void add_vec_(scalar_t* dst, const scalar_t* src, scalar_t scale, signedindex_t n_dims) {
     for (signedindex_t d = 0; d < n_dims; d++) { dst[d] += (src[d] * scale); }
 }
 // elementwise subtraction to a consective block of memory defined by SPATIAL_DIM
 template<typename scalar_t>
-__forceinline__ __device__ void subtract_vec(scalar_t* dst, const scalar_t* src1, const scalar_t* src2, signedindex_t n_dims) {
+void subtract_vec(scalar_t* dst, const scalar_t* src1, const scalar_t* src2, signedindex_t n_dims) {
     for (signedindex_t d = 0; d < n_dims; d++) { dst[d] = src1[d] - src2[d]; }
 }
 // elementwise assignment to a consective block of memory defined by SPATIAL_DIM
 // user is responsible for making sure dim == 3
 template<typename scalar_t>
-__forceinline__ __device__ void assign_vec(scalar_t* dst, const scalar_t* src, signedindex_t n_dims) {
+void assign_vec(scalar_t* dst, const scalar_t* src, signedindex_t n_dims) {
     for (signedindex_t d = 0; d < n_dims; d++) { dst[d] = src[d]; }
 }
 template<typename scalar_t>
-__forceinline__ __device__ void assign_vec(scalar_t* dst, const scalar_t* src, scalar_t scale, signedindex_t n_dims) {
+void assign_vec(scalar_t* dst, const scalar_t* src, scalar_t scale, signedindex_t n_dims) {
     for (signedindex_t d = 0; d < n_dims; d++) { dst[d] = (src[d] * scale); }
 }
 
 template<typename scalar_t>
-__forceinline__ __device__ scalar_t inner_prod(const scalar_t* vec1, const scalar_t* vec2, signedindex_t n_dims) {
+scalar_t inner_prod(const scalar_t* vec1, const scalar_t* vec2, signedindex_t n_dims) {
     scalar_t result = 0;
     for (signedindex_t d = 0; d < n_dims; d++) { result += vec1[d] * vec2[d]; }
     return result;
 }
 
 template<typename scalar_t>
-__forceinline__ __device__ scalar_t get_point2point_dist2(const scalar_t* point1, const scalar_t* point2) {
+scalar_t get_point2point_dist2(const scalar_t* point1, const scalar_t* point2) {
     // squared distance between 2 points, both dim == 3
     // user is responsible for making sure dim == 3
     scalar_t dist2 = 0.0;
     for (signedindex_t d = 0; d < SPATIAL_DIM; d++) {
-        dist2 += pow(point1[d] - point2[d], scalar_t(2.0));
+        dist2 += std::pow(point1[d] - point2[d], scalar_t(2.0));
     }
     return dist2;
 }
 
 template<typename scalar_t>
-__forceinline__ __device__ scalar_t eval_A_mu(const scalar_t* diff, const scalar_t* mu, scalar_t smooth_width) {
+scalar_t eval_A_mu(const scalar_t* diff, const scalar_t* mu, scalar_t smooth_width, bool continuous_kernel=false) {
     // diff = x - y
     // returns -(x - y)\cdot mu
     // user is responsible for making sure dim == 3
@@ -69,11 +93,11 @@ __forceinline__ __device__ scalar_t eval_A_mu(const scalar_t* diff, const scalar
         for (signedindex_t d = 0; d < SPATIAL_DIM; d++) {
             result += (-1 * diff[d] * mu[d]) / denominator;
         }
-    } else {                    // inside smoothing range
-        // denominator = smooth_width * smooth_width * smooth_width;
-        //     for (signedindex_t d = 0; d < SPATIAL_DIM; d++) {
-        //     result += (-1 * diff[d] * mu[d]) / denominator;
-        // }
+    } else if (continuous_kernel) {                    // inside smoothing range
+        denominator = smooth_width * smooth_width * smooth_width;
+            for (signedindex_t d = 0; d < SPATIAL_DIM; d++) {
+            result += (-1 * diff[d] * mu[d]) / denominator;
+        }
     }
     return result;
 }
@@ -81,7 +105,7 @@ __forceinline__ __device__ scalar_t eval_A_mu(const scalar_t* diff, const scalar
 
 
 template<typename scalar_t>
-__forceinline__ __device__ void eval_AT_s_add_(scalar_t* out, const scalar_t* diff, const scalar_t* s, scalar_t smooth_width) {
+void eval_AT_s_add_(scalar_t* out, const scalar_t* diff, const scalar_t* s, scalar_t smooth_width) {
     // diff = y - x
     // returns (y - x)*s (s is scalar)
     // user is responsible for making sure dim == 3
@@ -111,7 +135,7 @@ __forceinline__ __device__ void eval_AT_s_add_(scalar_t* out, const scalar_t* di
 
 
 template<typename scalar_t>
-__forceinline__ __device__ void eval_G_mu_add_(scalar_t* out, const scalar_t* diff, const scalar_t* mu, scalar_t smooth_width) {
+void eval_G_mu_add_(scalar_t* out, const scalar_t* diff, const scalar_t* mu, scalar_t smooth_width) {
     // diff = x - y
     // returns -H(x-y)\cdot mu
     // user is responsible for making sure dim == 3
@@ -145,8 +169,9 @@ __forceinline__ __device__ void eval_G_mu_add_(scalar_t* out, const scalar_t* di
 
 
 /// @brief collect point attributes to nodes
+
 template<typename scalar_t>
-__global__ void scatter_point_attrs_to_nodes_leaf_cuda_kernel(
+void scatter_point_attrs_to_nodes_leaf_cpu_kernel(
         const signedindex_t* ptr_node_parent_list,
         const scalar_t* ptr_points,
         const scalar_t* ptr_point_weights,
@@ -162,8 +187,9 @@ __global__ void scatter_point_attrs_to_nodes_leaf_cuda_kernel(
         scalar_t* ptr_out_node_weights,
 
         signedindex_t attr_dim,
-        signedindex_t num_nodes) {
-    signedindex_t node_index = blockDim.x * blockIdx.x + threadIdx.x;
+        signedindex_t num_nodes,
+        signedindex_t node_index) {
+    
     if (node_index < num_nodes) {
         ptr_scattered_mask[node_index] = false;
 
@@ -197,7 +223,56 @@ __global__ void scatter_point_attrs_to_nodes_leaf_cuda_kernel(
 }
 
 template<typename scalar_t>
-__global__ void scatter_point_attrs_to_nodes_nonleaf_cuda_kernel(
+void scatter_point_attrs_to_nodes_leaf_cpu_kernel_launcher(
+        const signedindex_t* ptr_node_parent_list,
+        const scalar_t* ptr_points,
+        const scalar_t* ptr_point_weights,
+        const scalar_t* ptr_point_attrs,
+        const signedindex_t* ptr_node2point_index,
+        const signedindex_t* ptr_node2point_indexstart,
+        const signedindex_t* ptr_num_points_in_node,
+        const bool* ptr_node_is_leaf_list,
+        bool* ptr_scattered_mask,
+
+        scalar_t* ptr_out_node_attrs,
+        scalar_t* ptr_out_node_reppoints,
+        scalar_t* ptr_out_node_weights,
+
+        signedindex_t attr_dim,
+        signedindex_t num_nodes) {
+
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
+        scatter_point_attrs_to_nodes_leaf_cpu_kernel<scalar_t>(
+            ptr_node_parent_list,
+            ptr_points,
+            ptr_point_weights,
+            ptr_point_attrs,
+            ptr_node2point_index,
+            ptr_node2point_indexstart,
+            ptr_num_points_in_node,
+            ptr_node_is_leaf_list,
+            ptr_scattered_mask,
+
+            ptr_out_node_attrs,
+            ptr_out_node_reppoints,
+            ptr_out_node_weights,
+
+            attr_dim,
+            num_nodes,
+            node_index
+        );
+    }
+
+}
+
+
+/////////////////////////////////
+
+
+template<typename scalar_t>
+void scatter_point_attrs_to_nodes_nonleaf_cpu_kernel(
         const signedindex_t* ptr_node_parent_list,
         const signedindex_t* ptr_node_children_list,
         const scalar_t* ptr_points,
@@ -215,9 +290,10 @@ __global__ void scatter_point_attrs_to_nodes_nonleaf_cuda_kernel(
         scalar_t* ptr_out_node_weights,
 
         signedindex_t attr_dim,
-        signedindex_t num_nodes
+        signedindex_t num_nodes,
+        signedindex_t node_index 
     ) {
-    signedindex_t node_index = blockDim.x * blockIdx.x + threadIdx.x;
+    // signedindex_t node_index = blockDim.x * blockIdx.x + threadIdx.x;
     if (node_index < num_nodes) {
         /// @note scatter only if it hasn't been scattered && it's not a leaf && all of its children have been scattered
         if (ptr_next_to_scatter_mask[node_index]) {
@@ -251,18 +327,68 @@ __global__ void scatter_point_attrs_to_nodes_nonleaf_cuda_kernel(
     }
 }
 
+template<typename scalar_t>
+void scatter_point_attrs_to_nodes_nonleaf_cpu_kernel_launcher(
+        const signedindex_t* ptr_node_parent_list,
+        const signedindex_t* ptr_node_children_list,
+        const scalar_t* ptr_points,
+        const scalar_t* ptr_point_weights,
+        const scalar_t* ptr_point_attrs,
+        const signedindex_t* ptr_node2point_index,
+        const signedindex_t* ptr_node2point_indexstart,
+        const signedindex_t* ptr_num_points_in_node,
+        const bool* ptr_node_is_leaf_list,
+        bool* ptr_scattered_mask,
+        const bool* ptr_next_to_scatter_mask,
+
+        scalar_t* ptr_out_node_attrs,
+        scalar_t* ptr_out_node_reppoints,
+        scalar_t* ptr_out_node_weights,
+
+        signedindex_t attr_dim,
+        signedindex_t num_nodes) {
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
+        scatter_point_attrs_to_nodes_nonleaf_cpu_kernel<scalar_t>(
+            ptr_node_parent_list,
+            ptr_node_children_list,
+            ptr_points,
+            ptr_point_weights,
+            ptr_point_attrs,
+            ptr_node2point_index,
+            ptr_node2point_indexstart,
+            ptr_num_points_in_node,
+            ptr_node_is_leaf_list,
+            ptr_scattered_mask,
+            ptr_next_to_scatter_mask,
+
+            ptr_out_node_attrs,
+            ptr_out_node_reppoints,
+            ptr_out_node_weights,
+
+            attr_dim,
+            num_nodes,
+            node_index); 
+    }
+}
+
+
+////////////////
 
 template<typename scalar_t>
-__global__ void find_next_to_scatter_cuda_kernel(
+void find_next_to_scatter_cpu_kernel(
         const signedindex_t* ptr_node_children_list,
         const bool* ptr_node_is_leaf_list,
         bool* ptr_scattered_mask,
         bool* ptr_next_to_scatter_mask,
         const signedindex_t* node2point_index,
-        signedindex_t num_nodes
+        signedindex_t num_nodes,
+        signedindex_t node_index
     ) {
-    signedindex_t node_index = blockDim.x * blockIdx.x + threadIdx.x;
+    // signedindex_t node_index = blockDim.x * blockIdx.x + threadIdx.x;
     if (node_index < num_nodes) {
+
         ptr_next_to_scatter_mask[node_index] = false;
         bool all_children_scattered = true;
 
@@ -282,125 +408,35 @@ __global__ void find_next_to_scatter_cuda_kernel(
 }
 
 
-
-std::vector<torch::Tensor> scatter_point_attrs_to_nodes_cuda(
-        torch::Tensor node_parent_list,
-        torch::Tensor node_children_list,
-        torch::Tensor points,
-        torch::Tensor point_weights,
-        torch::Tensor point_attrs,
-        torch::Tensor node2point_index,
-        torch::Tensor node2point_indexstart,
-        torch::Tensor num_points_in_node,
-        torch::Tensor node_is_leaf_list,
-        signedindex_t tree_depth
-        ) {
-
-    signedindex_t num_nodes = node_parent_list.size(0);
-    signedindex_t attr_dim = point_attrs.size(1);
-    assert(attr_dim == SPATIAL_DIM or attr_dim == 1);
-
-    auto bool_tensor_options = torch::TensorOptions().dtype(torch::kBool).device(points.device());
-    auto scattered_mask = torch::zeros({num_nodes}, bool_tensor_options);
-    auto next_to_scatter_mask = torch::zeros({num_nodes}, bool_tensor_options);
-    
-    auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(points.device());
-    auto out_node_attrs = torch::zeros({num_nodes, point_attrs.size(1)}, float_tensor_options);
-    auto out_node_reppoints = torch::zeros({num_nodes, SPATIAL_DIM}, float_tensor_options);
-    auto out_node_weights = torch::zeros({num_nodes}, float_tensor_options);
-
-    signedindex_t num_blocks = (num_nodes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "scatter_point_attrs_to_nodes_leaf_cuda_kernel", ([&] {
-        scatter_point_attrs_to_nodes_leaf_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            node_parent_list.data<signedindex_t>(),
-            points.data<scalar_t>(),
-            point_weights.data<scalar_t>(),
-            point_attrs.data<scalar_t>(),
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            node_is_leaf_list.data<bool>(),
-            scattered_mask.data<bool>(),
-            out_node_attrs.data<scalar_t>(),
-            out_node_reppoints.data<scalar_t>(),
-            out_node_weights.data<scalar_t>(),
-            attr_dim,
-            num_nodes
-            );
-    }));
-    // bool* ptr_scattered_mask_d = scattered_mask.data<bool>();
-    // bool* ptr_scattered_mask_h = new bool[num_nodes];
-    // bool* ptr_to_scatter_mask_d = next_to_scatter_mask.data<bool>();
-    // bool* ptr_to_scatter_mask_h = new bool[num_nodes];
-    // cudaMemcpy(ptr_scattered_mask_h, ptr_scattered_mask_d, sizeof(bool)*num_nodes, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(ptr_to_scatter_mask_h, ptr_to_scatter_mask_d, sizeof(bool)*num_nodes, cudaMemcpyDeviceToHost);
-    // int num_scattered = 0;
-    // int num_to_scatter = 0;
-    // for (int i = 0; i < num_nodes; i++) {
-    //     if (ptr_scattered_mask_h[i])
-    //         num_scattered += 1;
-    //     if (ptr_to_scatter_mask_h[i])
-    //         num_to_scatter += 1;
-    // }
-    // printf("[DEBUG] leaves: scattered = %d\n", num_scattered);
-
-
-    for (signedindex_t depth = tree_depth-1; depth >= 0; depth--) {
-        AT_DISPATCH_FLOATING_TYPES(points.type(), "find_next_to_scatter_cuda_kernel", ([&] {
-            find_next_to_scatter_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-                node_children_list.data<signedindex_t>(),
-                node_is_leaf_list.data<bool>(),
-                scattered_mask.data<bool>(),
-                next_to_scatter_mask.data<bool>(),
-                node2point_index.data<signedindex_t>(),
-                num_nodes
-            );
-        }));
-
-        // cudaMemcpy(ptr_scattered_mask_h, ptr_scattered_mask_d, sizeof(bool)*num_nodes, cudaMemcpyDeviceToHost);
-        // cudaMemcpy(ptr_to_scatter_mask_h, ptr_to_scatter_mask_d, sizeof(bool)*num_nodes, cudaMemcpyDeviceToHost);
-        
-        // num_scattered = 0;
-        // num_to_scatter = 0;
-        // for (int i = 0; i < num_nodes; i++) {
-        //     if (ptr_scattered_mask_h[i])
-        //         num_scattered += 1;
-        //     if (ptr_to_scatter_mask_h[i])
-        //         num_to_scatter += 1;
-        // }
-        // printf("[DEBUG] depth = %d, scattered = %d, to_scatter = %d\n", depth, num_scattered, num_to_scatter);
-
-        AT_DISPATCH_FLOATING_TYPES(points.type(), "scatter_point_attrs_to_nodes_nonleaf_cuda_kernel", ([&] {
-            scatter_point_attrs_to_nodes_nonleaf_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-                node_parent_list.data<signedindex_t>(),
-                node_children_list.data<signedindex_t>(),
-                points.data<scalar_t>(),
-                point_weights.data<scalar_t>(),
-                point_attrs.data<scalar_t>(),
-                node2point_index.data<signedindex_t>(),
-                node2point_indexstart.data<signedindex_t>(),
-                num_points_in_node.data<signedindex_t>(),
-                node_is_leaf_list.data<bool>(),
-                scattered_mask.data<bool>(),
-                next_to_scatter_mask.data<bool>(),
-                out_node_attrs.data<scalar_t>(),
-                out_node_reppoints.data<scalar_t>(),
-                out_node_weights.data<scalar_t>(),
-                attr_dim,
-                num_nodes
-            );
-        }));
+template<typename scalar_t>
+void find_next_to_scatter_cpu_kernel_launcher(
+        const signedindex_t* ptr_node_children_list,
+        const bool* ptr_node_is_leaf_list,
+        bool* ptr_scattered_mask,
+        bool* ptr_next_to_scatter_mask,
+        const signedindex_t* node2point_index,
+        signedindex_t num_nodes
+    ) {
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t node_index = 0; node_index < num_nodes; node_index++) {
+        find_next_to_scatter_cpu_kernel<scalar_t>(
+            ptr_node_children_list,
+            ptr_node_is_leaf_list,
+            ptr_scattered_mask,
+            ptr_next_to_scatter_mask,
+            node2point_index,
+            num_nodes,
+            node_index
+        );
     }
-
-    return {out_node_attrs, out_node_reppoints, out_node_weights};
 }
 
 
-
+//////////////////////////////////
 
 template<typename scalar_t>
-__global__ void multiply_by_A_cuda_kernel(
+void multiply_by_A_cpu_kernel(
         const scalar_t* query_points,  // [N', 3]
         const scalar_t* query_width,   // [N',]
         const scalar_t* points,        // [N, 3]
@@ -414,11 +450,14 @@ __global__ void multiply_by_A_cuda_kernel(
         const scalar_t* node_reppoints,
         const signedindex_t* num_points_in_node,
         scalar_t* out_attrs,           // [N,]
-        signedindex_t num_queries
+        signedindex_t num_queries,
+        signedindex_t query_index,
+        bool continuous_kernel=false
     ) {
     // the caller is responsible for making sure 'point_attrs' is [N, C=3]
-    signedindex_t query_index = blockDim.x * blockIdx.x + threadIdx.x;
+    
     if (query_index < num_queries) {
+    
         scalar_t out_val = 0.0;
         
         constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
@@ -435,10 +474,10 @@ __global__ void multiply_by_A_cuda_kernel(
                                                               node_reppoints + cur_node_index*SPATIAL_DIM);
 
             /// @case 1: the query point is far from the sample, approximate the query value with the node center
-            if (point2node_dist2 > pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
+            if (point2node_dist2 > std::pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
                 scalar_t diff[SPATIAL_DIM];     // x - y
                 subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, node_reppoints + cur_node_index*SPATIAL_DIM, SPATIAL_DIM);
-                out_val += eval_A_mu<scalar_t>(diff, node_attrs + cur_node_index * SPATIAL_DIM, query_width[query_index]);
+                out_val += eval_A_mu<scalar_t>(diff, node_attrs + cur_node_index * SPATIAL_DIM, query_width[query_index], continuous_kernel);
             } else {
                 /// @case 2: the query point is not that far,
                 //           if nonleaf, push children to the search stack
@@ -454,7 +493,7 @@ __global__ void multiply_by_A_cuda_kernel(
                         signedindex_t point_index = node2point_index[node2point_indexstart[cur_node_index] + k];
                         scalar_t diff[SPATIAL_DIM];     // x - y
                         subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, points + point_index*SPATIAL_DIM, SPATIAL_DIM);
-                        out_val += eval_A_mu<scalar_t>(diff, point_attrs + point_index * SPATIAL_DIM, query_width[query_index]);
+                        out_val += eval_A_mu<scalar_t>(diff, point_attrs + point_index * SPATIAL_DIM, query_width[query_index], continuous_kernel);
                     }
                 }
             }
@@ -463,54 +502,53 @@ __global__ void multiply_by_A_cuda_kernel(
     }
 }
 
-torch::Tensor multiply_by_A_cuda(
-        torch::Tensor query_points,  // [N', 3]
-        torch::Tensor query_width,   // [N',]
-        torch::Tensor points,        // [N, 3]
-        torch::Tensor point_attrs,   // [N, C]
-        torch::Tensor node2point_index,
-        torch::Tensor node2point_indexstart,
-        torch::Tensor node_children_list,
-        torch::Tensor node_attrs,
-        torch::Tensor node_is_leaf_list,
-        torch::Tensor node_half_w_list,
-        torch::Tensor node_reppoints,
-        torch::Tensor num_points_in_node
-        ) {
 
-    signedindex_t num_queries = query_points.size(0);
+template<typename scalar_t>
+void multiply_by_A_cpu_kernel_launcher(
+        const scalar_t* query_points,  // [N', 3]
+        const scalar_t* query_width,   // [N',]
+        const scalar_t* points,        // [N, 3]
+        const scalar_t* point_attrs,   // [N, C]
+        const signedindex_t* node2point_index,
+        const signedindex_t* node2point_indexstart,
+        const signedindex_t* node_children_list,
+        const scalar_t* node_attrs,
+        const bool* node_is_leaf_list,
+        const scalar_t* node_half_w_list,
+        const scalar_t* node_reppoints,
+        const signedindex_t* num_points_in_node,
+        scalar_t* out_attrs,           // [N,]
+        signedindex_t num_queries,
+        bool continutous_kernel) {
 
-    auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(points.device());
-    auto out_attrs = torch::zeros({query_points.size(0), 1}, float_tensor_options);
-
-    signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_A_cuda_kernel", ([&] {
-        multiply_by_A_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
-            num_queries
-        );
-    }));
-
-    return out_attrs;
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
+        multiply_by_A_cpu_kernel<scalar_t>(
+            query_points,  // [N', 3]
+            query_width,   // [N',]
+            points,        // [N, 3]
+            point_attrs,   // [N, C]
+            node2point_index,
+            node2point_indexstart,
+            node_children_list,
+            node_attrs,
+            node_is_leaf_list,
+            node_half_w_list,
+            node_reppoints,
+            num_points_in_node,
+            out_attrs,           // [N,]
+            num_queries,
+            query_index,
+            continutous_kernel);
+    }
 }
 
 
-
+///////////////////
 
 template<typename scalar_t>
-__global__ void multiply_by_AT_cuda_kernel(
+void multiply_by_AT_cpu_kernel(
         const scalar_t* query_points,  // [N', 3]
         const scalar_t* query_width,   // [N',]
         const scalar_t* points,        // [N, 3]
@@ -524,12 +562,13 @@ __global__ void multiply_by_AT_cuda_kernel(
         const scalar_t* node_reppoints,
         const signedindex_t* num_points_in_node,
         scalar_t* out_attrs,           // [N, 3]
-        signedindex_t num_queries
+        signedindex_t num_queries,
+        signedindex_t query_index
     ) {
     // the caller is responsible for making sure 'point_attrs' is [N, C=3]
-    signedindex_t query_index = blockDim.x * blockIdx.x + threadIdx.x;
+    
+    // signedindex_t query_index = blockDim.x * blockIdx.x + threadIdx.x;
     if (query_index < num_queries) {
-    // if (query_index == 1) {
         scalar_t out_vec[SPATIAL_DIM] = {};
         
         constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
@@ -546,7 +585,7 @@ __global__ void multiply_by_AT_cuda_kernel(
                                                               node_reppoints + cur_node_index*SPATIAL_DIM);
 
             /// @case 1: the query point is far from the sample, approximate the query value with the node center
-            if (point2node_dist2 > pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
+            if (point2node_dist2 > std::pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
                 scalar_t diff[SPATIAL_DIM];     // x - y
                 subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, node_reppoints + cur_node_index*SPATIAL_DIM, SPATIAL_DIM);
                 eval_AT_s_add_<scalar_t>(out_vec, diff, node_attrs + cur_node_index, query_width[query_index]);
@@ -580,57 +619,8 @@ __global__ void multiply_by_AT_cuda_kernel(
     }
 }
 
-torch::Tensor multiply_by_AT_cuda(
-        torch::Tensor query_points,  // [N', 3]
-        torch::Tensor query_width,   // [N',]
-        torch::Tensor points,        // [N, 3]
-        torch::Tensor point_attrs,   // [N, C]
-        torch::Tensor node2point_index,
-        torch::Tensor node2point_indexstart,
-        torch::Tensor node_children_list,
-        torch::Tensor node_attrs,
-        torch::Tensor node_is_leaf_list,
-        torch::Tensor node_half_w_list,
-        torch::Tensor node_reppoints,
-        torch::Tensor num_points_in_node
-        ) {
-
-    signedindex_t num_queries = query_points.size(0);
-
-    auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(points.device());
-    // auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(torch::kCUDA);
-    auto out_attrs = torch::zeros({query_points.size(0), SPATIAL_DIM}, float_tensor_options);
-    // auto out_attrs = torch::zeros({query_points.size(0), SPATIAL_DIM});
-
-    // std::cout << "[DEBUG] created AT result\n";
-
-    signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_AT_cuda_kernel", ([&] {
-        multiply_by_AT_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
-            num_queries
-        );
-    }));
-
-    return out_attrs;
-}
-
-
-/// @note getting negative gradient
 template<typename scalar_t>
-__global__ void multiply_by_G_cuda_kernel(
+void multiply_by_AT_cpu_kernel_launcher(
         const scalar_t* query_points,  // [N', 3]
         const scalar_t* query_width,   // [N',]
         const scalar_t* points,        // [N, 3]
@@ -644,11 +634,57 @@ __global__ void multiply_by_G_cuda_kernel(
         const scalar_t* node_reppoints,
         const signedindex_t* num_points_in_node,
         scalar_t* out_attrs,           // [N, 3]
-        signedindex_t num_queries
+        signedindex_t num_queries) {
+
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
+        multiply_by_AT_cpu_kernel<scalar_t>(
+            query_points,  // [N', 3]
+            query_width,   // [N',]
+            points,        // [N, 3]
+            point_attrs,   // [N, C]
+            node2point_index,
+            node2point_indexstart,
+            node_children_list,
+            node_attrs,
+            node_is_leaf_list,
+            node_half_w_list,
+            node_reppoints,
+            num_points_in_node,
+            out_attrs,           // [N, 3]
+            num_queries,
+            query_index);
+    }
+}
+
+
+
+/// @note getting negative gradient
+template<typename scalar_t>
+void multiply_by_G_cpu_kernel(
+        const scalar_t* query_points,  // [N', 3]
+        const scalar_t* query_width,   // [N',]
+        const scalar_t* points,        // [N, 3]
+        const scalar_t* point_attrs,   // [N, C]
+        const signedindex_t* node2point_index,
+        const signedindex_t* node2point_indexstart,
+        const signedindex_t* node_children_list,
+        const scalar_t* node_attrs,
+        const bool* node_is_leaf_list,
+        const scalar_t* node_half_w_list,
+        const scalar_t* node_reppoints,
+        const signedindex_t* num_points_in_node,
+        scalar_t* out_attrs,           // [N, 3]
+        signedindex_t num_queries,
+        signedindex_t query_index
     ) {
     // the caller is responsible for making sure 'point_attrs' is [N, C=3]
-    signedindex_t query_index = blockDim.x * blockIdx.x + threadIdx.x;
+    
+    //  = blockDim.x * blockIdx.x + threadIdx.x;
     if (query_index < num_queries) {
+    
+    
         scalar_t out_vec[SPATIAL_DIM] = {};
         
         constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
@@ -665,7 +701,7 @@ __global__ void multiply_by_G_cuda_kernel(
                                                               node_reppoints + cur_node_index*SPATIAL_DIM);
 
             /// @case 1: the query point is far from the sample, approximate the query value with the node center
-            if (point2node_dist2 > pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
+            if (point2node_dist2 > std::pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
                 scalar_t diff[SPATIAL_DIM];     // x - y
                 subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, node_reppoints + cur_node_index*SPATIAL_DIM, SPATIAL_DIM);
                 eval_G_mu_add_<scalar_t>(out_vec, diff, node_attrs + cur_node_index*SPATIAL_DIM, query_width[query_index]);
@@ -693,153 +729,55 @@ __global__ void multiply_by_G_cuda_kernel(
     }
 }
 
-
-torch::Tensor multiply_by_G_cuda(
-        torch::Tensor query_points,  // [N', 3]
-        torch::Tensor query_width,   // [N',]
-        torch::Tensor points,        // [N, 3]
-        torch::Tensor point_attrs,   // [N, C]
-        torch::Tensor node2point_index,
-        torch::Tensor node2point_indexstart,
-        torch::Tensor node_children_list,
-        torch::Tensor node_attrs,
-        torch::Tensor node_is_leaf_list,
-        torch::Tensor node_half_w_list,
-        torch::Tensor node_reppoints,
-        torch::Tensor num_points_in_node
-        ) {
-
-    signedindex_t num_queries = query_points.size(0);
-
-    auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(points.device());
-    auto out_attrs = torch::zeros({query_points.size(0), SPATIAL_DIM}, float_tensor_options);
-
-    signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_A_cuda_kernel", ([&] {
-        multiply_by_G_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
-            num_queries
-        );
-    }));
-    return out_attrs;
+template<typename scalar_t>
+void multiply_by_G_cpu_kernel_launcher(
+        const scalar_t* query_points,  // [N', 3]
+        const scalar_t* query_width,   // [N',]
+        const scalar_t* points,        // [N, 3]
+        const scalar_t* point_attrs,   // [N, C]
+        const signedindex_t* node2point_index,
+        const signedindex_t* node2point_indexstart,
+        const signedindex_t* node_children_list,
+        const scalar_t* node_attrs,
+        const bool* node_is_leaf_list,
+        const scalar_t* node_half_w_list,
+        const scalar_t* node_reppoints,
+        const signedindex_t* num_points_in_node,
+        scalar_t* out_attrs,           // [N, 3]
+        signedindex_t num_queries) {
+    omp_set_num_threads(20);
+    #pragma omp parallel for
+    for (signedindex_t query_index = 0; query_index < num_queries; query_index++) {
+        multiply_by_G_cpu_kernel<scalar_t>(
+            query_points,  // [N', 3]
+            query_width,   // [N',]
+            points,        // [N, 3]
+            point_attrs,   // [N, C]
+            node2point_index,
+            node2point_indexstart,
+            node_children_list,
+            node_attrs,
+            node_is_leaf_list,
+            node_half_w_list,
+            node_reppoints,
+            num_points_in_node,
+            out_attrs,           // [N, 3]
+            num_queries,
+            query_index);
+    }
 }
 
 
-// /// @note getting negative gradient
-// template<typename scalar_t>
-// __global__ void multiply_by_GT_cuda_kernel(
-//         const scalar_t* query_points,  // [N', 3]
-//         const scalar_t* query_width,   // [N',]
-//         const scalar_t* points,        // [N, 3]
-//         const scalar_t* point_attrs,   // [N, C]
-//         const signedindex_t* node2point_index,
-//         const signedindex_t* node2point_indexstart,
-//         const signedindex_t* node_children_list,
-//         const scalar_t* node_attrs,
-//         const bool* node_is_leaf_list,
-//         const scalar_t* node_half_w_list,
-//         const scalar_t* node_reppoints,
-//         const signedindex_t* num_points_in_node,
-//         scalar_t* out_attrs,           // [N, 3]
-//         signedindex_t num_queries
-//     ) {
-//     // the caller is responsible for making sure 'point_attrs' is [N, C=3]
-//     signedindex_t query_index = blockDim.x * blockIdx.x + threadIdx.x;
-//     if (query_index < num_queries) {
-//         scalar_t out_vec[SPATIAL_DIM] = {};
-        
-//         constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
-//         signedindex_t search_stack[search_stack_max_size] = {};
-//         signedindex_t search_stack_top = 0;
-
-//         // a push
-//         search_stack[search_stack_top++] = 0;
-//         while (search_stack_top > 0) {
-//             assert(search_stack_top < search_stack_max_size);
-//             // a pop
-//             signedindex_t cur_node_index = search_stack[--search_stack_top];
-//             scalar_t point2node_dist2 = get_point2point_dist2(query_points + query_index*SPATIAL_DIM,
-//                                                               node_reppoints + cur_node_index*SPATIAL_DIM);
-
-//             /// @case 1: the query point is far from the sample, approximate the query value with the node center
-//             if (point2node_dist2 > pow(scalar_t(TREECODE_THRESHOLD * 2.0f) * node_half_w_list[cur_node_index], scalar_t(2.0f))) {
-//                 scalar_t diff[SPATIAL_DIM];     // x - y
-//                 subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, node_reppoints + cur_node_index*SPATIAL_DIM, SPATIAL_DIM);
-//                 eval_GT_mu_add_<scalar_t>(out_vec, diff, node_attrs + cur_node_index*SPATIAL_DIM, query_width[query_index]);
-//             } else {
-//                 /// @case 2: the query point is not that far,
-//                 //           if nonleaf, push children to the search stack
-//                 if (!node_is_leaf_list[cur_node_index]) {
-//                     for (signedindex_t k = 0; k < NUM_OCT_CHILDREN; k++) {
-//                         if (node_children_list[cur_node_index * NUM_OCT_CHILDREN + k] != -1) {
-//                             search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
-//                             assert(search_stack_top < search_stack_max_size);
-//                         }
-//                     }
-//                 } else {  /// @case 3: this node is a leaf node, compute over samples
-//                     for (signedindex_t k = 0; k < num_points_in_node[cur_node_index]; k++) {
-//                         signedindex_t point_index = node2point_index[node2point_indexstart[cur_node_index] + k];
-//                         scalar_t diff[SPATIAL_DIM];     // x - y
-//                         subtract_vec<scalar_t>(diff, query_points + query_index*SPATIAL_DIM, points + point_index*SPATIAL_DIM, SPATIAL_DIM);
-//                         eval_GT_mu_add_<scalar_t>(out_vec, diff, point_attrs + point_index*SPATIAL_DIM, query_width[query_index]);
-//                     }
-//                 }
-//             }
-//         }
-//         assign_vec<scalar_t>(out_attrs + query_index*SPATIAL_DIM, out_vec, SPATIAL_DIM);
-//     }
-// }
-
-// torch::Tensor multiply_by_GT_cuda(
-//         torch::Tensor query_points,  // [N', 3]
-//         torch::Tensor query_width,   // [N',]
-//         torch::Tensor points,        // [N, 3]
-//         torch::Tensor point_attrs,   // [N, C]
-//         torch::Tensor node2point_index,
-//         torch::Tensor node2point_indexstart,
-//         torch::Tensor node_children_list,
-//         torch::Tensor node_attrs,
-//         torch::Tensor node_is_leaf_list,
-//         torch::Tensor node_half_w_list,
-//         torch::Tensor node_reppoints,
-//         torch::Tensor num_points_in_node
-//         ) {
-
-//     signedindex_t num_queries = query_points.size(0);
-
-//     auto float_tensor_options = torch::TensorOptions().dtype(points.dtype()).device(points.device());
-//     auto out_attrs = torch::zeros({query_points.size(0), SPATIAL_DIM}, float_tensor_options);
-
-//     signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-//     AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_A_cuda_kernel", ([&] {
-//         multiply_by_GT_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-//             query_points.data<scalar_t>(),  // [N', 3]
-//             query_width.data<scalar_t>(),   // [N',]
-//             points.data<scalar_t>(),        // [N, 3]
-//             point_attrs.data<scalar_t>(),   // [N, C]
-//             node2point_index.data<signedindex_t>(),
-//             node2point_indexstart.data<signedindex_t>(),
-//             node_children_list.data<signedindex_t>(),
-//             node_attrs.data<scalar_t>(),
-//             node_is_leaf_list.data<bool>(),
-//             node_half_w_list.data<scalar_t>(),
-//             node_reppoints.data<scalar_t>(),
-//             num_points_in_node.data<signedindex_t>(),
-//             out_attrs.data<scalar_t>(),           // [N, 3]
-//             num_queries
-//         );
-//     }));
-//     return out_attrs;
-// }
+//////////// instantiation ////////////
+auto ptr_scatter_point_attrs_to_nodes_leaf_cpu_kernel_launcher_float  = scatter_point_attrs_to_nodes_leaf_cpu_kernel_launcher<float>;
+auto ptr_scatter_point_attrs_to_nodes_leaf_cpu_kernel_launcher_double = scatter_point_attrs_to_nodes_leaf_cpu_kernel_launcher<double>;
+auto ptr_scatter_point_attrs_to_nodes_nonleaf_cpu_kernel_launcher_float  = scatter_point_attrs_to_nodes_nonleaf_cpu_kernel_launcher<float>;
+auto ptr_scatter_point_attrs_to_nodes_nonleaf_cpu_kernel_launcher_double = scatter_point_attrs_to_nodes_nonleaf_cpu_kernel_launcher<double>;
+auto ptr_find_next_to_scatter_cpu_kernel_launcher_float  = find_next_to_scatter_cpu_kernel_launcher<float>;
+auto ptr_find_next_to_scatter_cpu_kernel_launcher_double = find_next_to_scatter_cpu_kernel_launcher<double>;
+auto ptr_multiply_by_A_cpu_kernel_launcher_float  = multiply_by_A_cpu_kernel_launcher<float>;
+auto ptr_multiply_by_A_cpu_kernel_launcher_double = multiply_by_A_cpu_kernel_launcher<double>;
+auto ptr_multiply_by_AT_cpu_kernel_launcher_float  = multiply_by_AT_cpu_kernel_launcher<float>;
+auto ptr_multiply_by_AT_cpu_kernel_launcher_double = multiply_by_AT_cpu_kernel_launcher<double>;
+auto ptr_multiply_by_G_cpu_kernel_launcher_float  = multiply_by_G_cpu_kernel_launcher<float>;
+auto ptr_multiply_by_G_cpu_kernel_launcher_double = multiply_by_G_cpu_kernel_launcher<double>;
