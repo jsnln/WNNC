@@ -26,6 +26,7 @@ python main_wnnc.py <input_pcd_file>
 ```
 
 2. For Gauss surface reconstruction:
+First download [ANN 1.1.2](https://www.cs.umd.edu/~mount/ANN/) and unpack to `ext/gaussrecon_src/ANN`. Run `make` there.
 ```bash
 sh build_cpu.sh
 sh build_cuda.sh
