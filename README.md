@@ -3,6 +3,7 @@
 This repository contains the official implementation of the paper
 
 **Fast and Globally Consistent Normal Orientation based on the Winding Number Normal Consistency**
+
 **ACM ToG 2024, SIGGRAPH Asia 2024 Journal Track**
 
 **[Siyou Lin](https://jsnln.github.io/), [Zuoqiang Shi](https://shizqi.github.io/), [Yebin Liu](http://liuyebin.com/)**
