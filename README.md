@@ -8,7 +8,9 @@ This repository contains the official implementation of the paper
 
 **[Siyou Lin](https://jsnln.github.io/), [Zuoqiang Shi](https://shizqi.github.io/), [Yebin Liu](http://liuyebin.com/)**
 
-[Project page (coming soon)](https://jsnln.github.io/wnnc/index.html) | [Paper (v1, with v2 coming soon)](https://arxiv.org/abs/2405.16634)
+[Project page](https://jsnln.github.io/wnnc/index.html) | [Paper](https://arxiv.org/abs/2405.16634)
+
+![WNNC](assets/wnnc_illustration.jpg "WNNC")
 
 ### Features
 
