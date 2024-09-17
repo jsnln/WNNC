@@ -12,18 +12,13 @@ import wn_treecode
 time_start = time()
 
 parser = argparse.ArgumentParser()
-parser.add_argument('input', type=str)
-parser.add_argument('--ws', type=float, default=1.0)
-# [0.04, 0.16]
-# [0.03, 0.12]
-# [0.02, 0.08]
-# [0.01, 0.04] real
-# [0.05, 0.2] sparse and sketch
-parser.add_argument('--wsmax', type=float, default=0.016)
-parser.add_argument('--wsmin', type=float, default=0.002)
-parser.add_argument('--oiters', type=int, default=40)
+parser.add_argument('input', type=str, help='input point cloud file name, must have extension xyz/ply/obj/npy')
+parser.add_argument('--width_config', type=str, choices=['l0', 'l1', 'l2', 'l3', 'l4', 'l5', 'custom'], required=True, help='choose a proper preset width config, or set it as custom, and use --wsmin --wsmax to define custom widths')
+parser.add_argument('--wsmax', type=float, default=0.01, help='only works if --width_config custom is specified')
+parser.add_argument('--wsmin', type=float, default=0.04, help='only works if --width_config custom is specified')
+parser.add_argument('--iters', type=int, default=40, help='number of iterations')
 parser.add_argument('--out_dir', type=str, default='results')
-parser.add_argument('--cpu', action='store_true', help='uses gpu by default')
+parser.add_argument('--cpu', action='store_true', help='use cpu code only')
 parser.add_argument('--tqdm', action='store_true', help='use tqdm bar')
 args = parser.parse_args()
 os.makedirs(args.out_dir, exist_ok=True)
@@ -32,13 +27,15 @@ os.makedirs(args.out_dir, exist_ok=True)
 if os.path.splitext(args.input)[-1] == '.xyz':
     points_normals = np.loadtxt(args.input)
     points_unnormalized = points_normals[:, :3]
-if os.path.splitext(args.input)[-1] in ['.ply', '.obj']:
+elif os.path.splitext(args.input)[-1] in ['.ply', '.obj']:
     import trimesh
     pcd = trimesh.load(args.input, process=False)
     points_unnormalized = np.array(pcd.vertices)
-if os.path.splitext(args.input)[-1] == '.npy':
+elif os.path.splitext(args.input)[-1] == '.npy':
     pcd = np.load(args.input)
     points_unnormalized = pcd[:, :3]
+else:
+    raise NotImplementedError('The input file must be have extension xyz/ply/obj/npy')
 
 time_preprocess_start = time()
 
@@ -60,20 +57,31 @@ if not args.cpu:
 
 wn_func = wn_treecode.WindingNumberTreecode(points_normalized)
 
-wsmin = args.wsmin * args.ws
-wsmax = args.wsmax * args.ws
+preset_widths = {
+    'l0': [0.002, 0.016],   # [0.002, 0.016]: noise level 0, used for uniform, noise free points in the paper
+    'l1': [0.01, 0.04],     # [0.01, 0.04]: noise level 1, used for real scans in the paper
+    'l2': [0.02, 0.08],     # [0.02, 0.08]: noise level 2, used for sigma=0.25% in the paper
+    'l3': [0.03, 0.12],     # [0.03, 0.12]: noise level 3, used for sigma=0.5% in the paper
+    'l4': [0.04, 0.16],     # [0.04, 0.16]: noise level 4, used for sigma=1% in the paper
+    'l5': [0.05, 0.2],      # [0.05, 0.2]: noise level 5, used for sparse points and 3D sketches in the paper
+    'custom': [args.wsmin, args.wsmax],
+}
+
+wsmin, wsmax = preset_widths[args.width_config]
 assert wsmin <= wsmax
+
+print(f'[LOG] You are using width config {args.width_config} width wsmin = {wsmin}, wsmax = {wsmax}')
 
 
 time_iter_start = time()
 if wn_func.is_cuda:
     torch.cuda.synchronize(device=None)
 with torch.no_grad():
-    bar = tqdm(range(args.oiters)) if args.tqdm else range(args.oiters)
+    bar = tqdm(range(args.iters)) if args.tqdm else range(args.iters)
 
     for i in bar:
-        width_scale = wsmin + ((args.oiters-1-i) / ((args.oiters-1))) * (wsmax - wsmin)
-        # width_scale = args.wsmin + 0.5 * (args.wsmax - args.wsmin) * (1 + math.cos(i/(args.oiters-1) * math.pi))
+        width_scale = wsmin + ((args.iters-1-i) / ((args.iters-1))) * (wsmax - wsmin)
+        # width_scale = args.wsmin + 0.5 * (args.wsmax - args.wsmin) * (1 + math.cos(i/(args.iters-1) * math.pi))
         
         # grad step
         A_mu = wn_func.forward_A(normals, widths * width_scale)
