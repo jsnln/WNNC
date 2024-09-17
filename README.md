@@ -31,8 +31,8 @@ cd ..
 # for clean uniform samples, use l0
 python main_wnnc.py data/Armadillo_40000.xyz --width_config l0 --tqdm
 
-# for noisy points, non-uniform distribution, use l1 (small noise) ~ l5 (large noise) depending on the noise level
-# the higher the noise level, the smoother the normals
+# for noisy or non-uniform points, use configs l1 (small noise) ~ l5 (large noise) depending on the noise level
+# a higher level gives smoother normals and better resilience to noise
 python main_wnnc.py data/bunny_noised.xyz --width_config l1 --tqdm
 ...
 python main_wnnc.py data/bunny_noised.xyz --width_config l5 --tqdm
