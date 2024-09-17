@@ -47,8 +47,8 @@ python main_wnnc.py -h
 2. For Gauss surface reconstruction:
 First download [ANN 1.1.2](https://www.cs.umd.edu/~mount/ANN/) and unpack to `ext/gaussrecon_src/ANN`. Run `make` there. Then go back to the main repository directory, and:
 ```bash
-sh build_cpu.sh
-sh build_cuda.sh
+sh build_GR_cpu.sh
+sh build_GR_cuda.sh
 
 ./main_GaussReconCPU -i <input.xyz> -o <output.ply>
 ./main_GaussReconCUDA -i <input.xyz> -o <output.ply>
