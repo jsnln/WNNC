@@ -460,7 +460,9 @@ void multiply_by_A_cpu_kernel(
     
         scalar_t out_val = 0.0;
         
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
+        // should be ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1?
+        // +2 just to be safe
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
@@ -571,7 +573,7 @@ void multiply_by_AT_cpu_kernel(
     if (query_index < num_queries) {
         scalar_t out_vec[SPATIAL_DIM] = {};
         
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
@@ -687,7 +689,7 @@ void multiply_by_G_cpu_kernel(
     
         scalar_t out_vec[SPATIAL_DIM] = {};
         
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
