@@ -457,21 +457,19 @@ void multiply_by_A_cpu_kernel(
     // the caller is responsible for making sure 'point_attrs' is [N, C=3]
     
     if (query_index < num_queries) {
-    
         scalar_t out_val = 0.0;
         
-        // should be ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1?
-        // +2 just to be safe
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
         // a push
+        assert(search_stack_top < search_stack_max_size);
         search_stack[search_stack_top++] = 0;
         while (search_stack_top > 0) {
-            assert(search_stack_top < search_stack_max_size);
             // a pop
             signedindex_t cur_node_index = search_stack[--search_stack_top];
+
             scalar_t point2node_dist2 = get_point2point_dist2(query_points + query_index*SPATIAL_DIM,
                                                               node_reppoints + cur_node_index*SPATIAL_DIM);
 
@@ -486,8 +484,8 @@ void multiply_by_A_cpu_kernel(
                 if (!node_is_leaf_list[cur_node_index]) {
                     for (signedindex_t k = 0; k < NUM_OCT_CHILDREN; k++) {
                         if (node_children_list[cur_node_index * NUM_OCT_CHILDREN + k] != -1) {
-                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                             assert(search_stack_top < search_stack_max_size);
+                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                         }
                     }
                 } else {  /// @case 3: this node is a leaf node, compute over samples
@@ -573,14 +571,14 @@ void multiply_by_AT_cpu_kernel(
     if (query_index < num_queries) {
         scalar_t out_vec[SPATIAL_DIM] = {};
         
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
         // a push
+        assert(search_stack_top < search_stack_max_size);
         search_stack[search_stack_top++] = 0;
         while (search_stack_top > 0) {
-            assert(search_stack_top < search_stack_max_size);
             // a pop
             signedindex_t cur_node_index = search_stack[--search_stack_top];
             scalar_t point2node_dist2 = get_point2point_dist2(query_points + query_index*SPATIAL_DIM,
@@ -600,8 +598,8 @@ void multiply_by_AT_cpu_kernel(
                 if (!node_is_leaf_list[cur_node_index]) {
                     for (signedindex_t k = 0; k < NUM_OCT_CHILDREN; k++) {
                         if (node_children_list[cur_node_index * NUM_OCT_CHILDREN + k] != -1) {
-                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                             assert(search_stack_top < search_stack_max_size);
+                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                         }
                     }
                 } else {  /// @case 3: this node is a leaf node, compute over samples
@@ -689,14 +687,14 @@ void multiply_by_G_cpu_kernel(
     
         scalar_t out_vec[SPATIAL_DIM] = {};
         
-        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 2;
+        constexpr signedindex_t search_stack_max_size = ALLOWED_MAX_DEPTH*(NUM_OCT_CHILDREN - 1) + 1;
         signedindex_t search_stack[search_stack_max_size] = {};
         signedindex_t search_stack_top = 0;
 
         // a push
+        assert(search_stack_top < search_stack_max_size);
         search_stack[search_stack_top++] = 0;
         while (search_stack_top > 0) {
-            assert(search_stack_top < search_stack_max_size);
             // a pop
             signedindex_t cur_node_index = search_stack[--search_stack_top];
             scalar_t point2node_dist2 = get_point2point_dist2(query_points + query_index*SPATIAL_DIM,
@@ -713,8 +711,8 @@ void multiply_by_G_cpu_kernel(
                 if (!node_is_leaf_list[cur_node_index]) {
                     for (signedindex_t k = 0; k < NUM_OCT_CHILDREN; k++) {
                         if (node_children_list[cur_node_index * NUM_OCT_CHILDREN + k] != -1) {
-                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                             assert(search_stack_top < search_stack_max_size);
+                            search_stack[search_stack_top++] = node_children_list[cur_node_index * NUM_OCT_CHILDREN + k];
                         }
                     }
                 } else {  /// @case 3: this node is a leaf node, compute over samples

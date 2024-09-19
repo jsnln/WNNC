@@ -53,8 +53,8 @@ struct OctNode {
     OctNode<scalar_t>* children[NUM_OCT_CHILDREN] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     OctNode<scalar_t>* parent = nullptr;
 
-    scalar_t serial_index = -1;
-    scalar_t depth = -1;
+    signedindex_t serial_index = -1;
+    signedindex_t depth = -1;
     bool is_leaf = false;
 };
 
@@ -107,7 +107,6 @@ OctNode<scalar_t>* build_tree_cpu_recursive(
     // basic properties of this node
     OctNode<scalar_t>* node = new OctNode<scalar_t>;
     node->serial_index = cur_node_index;
-    cur_node_index += 1;
 
     node->c_x = c_x;
     node->c_y = c_y;
@@ -116,6 +115,8 @@ OctNode<scalar_t>* build_tree_cpu_recursive(
     node->point_indices = point_indices;
     node->parent = parent;
     node->depth = cur_depth;
+
+    cur_node_index += 1;
 
     // stop splitting if maximum depth reached, or point threshold reached
     if ((max_depth >= 0 && cur_depth >= max_depth) || num_points <= max_points_per_node) {
