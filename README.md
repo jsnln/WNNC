@@ -16,6 +16,7 @@ This repository contains the official implementation of the paper
 
 1. A PyTorch extension for accelerating winding numbers in `ext/wn_treecode`
 2. A fast iterative method for normal estimation: `main_wnnc.py`
+![WNNC gallery](assets/wnnc_gallery.jpg "WNNC gallery")
 3. As a by-product, we provide *unofficial* CPU and CUDA implementations for [Gauss surface reconstruction](https://dl.acm.org/doi/10.1145/3233984) in `ext/gaussrecon_src`, which is faster than [PoissonRecon](https://github.com/mkazhdan/PoissonRecon) with better smoothness control, but never officially open-sourced.
 
 ### Usage
