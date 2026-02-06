@@ -63,7 +63,7 @@ std::vector<torch::Tensor> scatter_point_attrs_to_nodes(
 
     signedindex_t num_nodes = node_parent_list.size(0);
     signedindex_t attr_dim = point_attrs.size(1);
-    assert(attr_dim == SPATIAL_DIM or attr_dim == 1);
+    assert((attr_dim == SPATIAL_DIM) || (attr_dim == 1));
 
     auto bool_tensor_options = torch::TensorOptions().dtype(torch::kBool).device(points.device());
     auto scattered_mask = torch::zeros({num_nodes}, bool_tensor_options);
@@ -76,20 +76,20 @@ std::vector<torch::Tensor> scatter_point_attrs_to_nodes(
 
     signedindex_t num_blocks = (num_nodes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "scatter_point_attrs_to_nodes_leaf_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "scatter_point_attrs_to_nodes_leaf_cuda_kernel", ([&] {
         scatter_point_attrs_to_nodes_leaf_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            node_parent_list.data<signedindex_t>(),
-            points.data<scalar_t>(),
-            point_weights.data<scalar_t>(),
-            point_attrs.data<scalar_t>(),
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            node_is_leaf_list.data<bool>(),
-            scattered_mask.data<bool>(),
-            out_node_attrs.data<scalar_t>(),
-            out_node_reppoints.data<scalar_t>(),
-            out_node_weights.data<scalar_t>(),
+            node_parent_list.data_ptr<signedindex_t>(),
+            points.data_ptr<scalar_t>(),
+            point_weights.data_ptr<scalar_t>(),
+            point_attrs.data_ptr<scalar_t>(),
+            node2point_index.data_ptr<signedindex_t>(),
+            node2point_indexstart.data_ptr<signedindex_t>(),
+            num_points_in_node.data_ptr<signedindex_t>(),
+            node_is_leaf_list.data_ptr<bool>(),
+            scattered_mask.data_ptr<bool>(),
+            out_node_attrs.data_ptr<scalar_t>(),
+            out_node_reppoints.data_ptr<scalar_t>(),
+            out_node_weights.data_ptr<scalar_t>(),
             attr_dim,
             num_nodes
             );
@@ -97,33 +97,33 @@ std::vector<torch::Tensor> scatter_point_attrs_to_nodes(
 
 
     for (signedindex_t depth = tree_depth-1; depth >= 0; depth--) {
-        AT_DISPATCH_FLOATING_TYPES(points.type(), "find_next_to_scatter_cuda_kernel", ([&] {
+        AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "find_next_to_scatter_cuda_kernel", ([&] {
             find_next_to_scatter_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-                node_children_list.data<signedindex_t>(),
-                node_is_leaf_list.data<bool>(),
-                scattered_mask.data<bool>(),
-                next_to_scatter_mask.data<bool>(),
-                node2point_index.data<signedindex_t>(),
+                node_children_list.data_ptr<signedindex_t>(),
+                node_is_leaf_list.data_ptr<bool>(),
+                scattered_mask.data_ptr<bool>(),
+                next_to_scatter_mask.data_ptr<bool>(),
+                node2point_index.data_ptr<signedindex_t>(),
                 num_nodes
             );
         }));
 
-        AT_DISPATCH_FLOATING_TYPES(points.type(), "scatter_point_attrs_to_nodes_nonleaf_cuda_kernel", ([&] {
+        AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "scatter_point_attrs_to_nodes_nonleaf_cuda_kernel", ([&] {
             scatter_point_attrs_to_nodes_nonleaf_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-                node_parent_list.data<signedindex_t>(),
-                node_children_list.data<signedindex_t>(),
-                points.data<scalar_t>(),
-                point_weights.data<scalar_t>(),
-                point_attrs.data<scalar_t>(),
-                node2point_index.data<signedindex_t>(),
-                node2point_indexstart.data<signedindex_t>(),
-                num_points_in_node.data<signedindex_t>(),
-                node_is_leaf_list.data<bool>(),
-                scattered_mask.data<bool>(),
-                next_to_scatter_mask.data<bool>(),
-                out_node_attrs.data<scalar_t>(),
-                out_node_reppoints.data<scalar_t>(),
-                out_node_weights.data<scalar_t>(),
+                node_parent_list.data_ptr<signedindex_t>(),
+                node_children_list.data_ptr<signedindex_t>(),
+                points.data_ptr<scalar_t>(),
+                point_weights.data_ptr<scalar_t>(),
+                point_attrs.data_ptr<scalar_t>(),
+                node2point_index.data_ptr<signedindex_t>(),
+                node2point_indexstart.data_ptr<signedindex_t>(),
+                num_points_in_node.data_ptr<signedindex_t>(),
+                node_is_leaf_list.data_ptr<bool>(),
+                scattered_mask.data_ptr<bool>(),
+                next_to_scatter_mask.data_ptr<bool>(),
+                out_node_attrs.data_ptr<scalar_t>(),
+                out_node_reppoints.data_ptr<scalar_t>(),
+                out_node_weights.data_ptr<scalar_t>(),
                 attr_dim,
                 num_nodes
             );
@@ -168,21 +168,21 @@ torch::Tensor multiply_by_A(
     auto out_attrs = torch::zeros({query_points.size(0), 1}, float_tensor_options);
 
     signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_A_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "multiply_by_A_cuda_kernel", ([&] {
         multiply_by_A_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
+            query_points.data_ptr<scalar_t>(),  // [N', 3]
+            query_width.data_ptr<scalar_t>(),   // [N',]
+            points.data_ptr<scalar_t>(),        // [N, 3]
+            point_attrs.data_ptr<scalar_t>(),   // [N, C]
+            node2point_index.data_ptr<signedindex_t>(),
+            node2point_indexstart.data_ptr<signedindex_t>(),
+            node_children_list.data_ptr<signedindex_t>(),
+            node_attrs.data_ptr<scalar_t>(),
+            node_is_leaf_list.data_ptr<bool>(),
+            node_half_w_list.data_ptr<scalar_t>(),
+            node_reppoints.data_ptr<scalar_t>(),
+            num_points_in_node.data_ptr<signedindex_t>(),
+            out_attrs.data_ptr<scalar_t>(),           // [N, 3]
             num_queries
         );
     }));
@@ -229,21 +229,21 @@ torch::Tensor multiply_by_AT(
     // std::cout << "[DEBUG] created AT result\n";
 
     signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_AT_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "multiply_by_AT_cuda_kernel", ([&] {
         multiply_by_AT_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
+            query_points.data_ptr<scalar_t>(),  // [N', 3]
+            query_width.data_ptr<scalar_t>(),   // [N',]
+            points.data_ptr<scalar_t>(),        // [N, 3]
+            point_attrs.data_ptr<scalar_t>(),   // [N, C]
+            node2point_index.data_ptr<signedindex_t>(),
+            node2point_indexstart.data_ptr<signedindex_t>(),
+            node_children_list.data_ptr<signedindex_t>(),
+            node_attrs.data_ptr<scalar_t>(),
+            node_is_leaf_list.data_ptr<bool>(),
+            node_half_w_list.data_ptr<scalar_t>(),
+            node_reppoints.data_ptr<scalar_t>(),
+            num_points_in_node.data_ptr<signedindex_t>(),
+            out_attrs.data_ptr<scalar_t>(),           // [N, 3]
             num_queries
         );
     }));
@@ -285,21 +285,21 @@ torch::Tensor multiply_by_G(
     auto out_attrs = torch::zeros({query_points.size(0), SPATIAL_DIM}, float_tensor_options);
 
     signedindex_t num_blocks = (num_queries + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    AT_DISPATCH_FLOATING_TYPES(points.type(), "multiply_by_G_cuda_kernel", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(points.scalar_type(), "multiply_by_G_cuda_kernel", ([&] {
         multiply_by_G_cuda_kernel<scalar_t><<<num_blocks, THREADS_PER_BLOCK>>>(
-            query_points.data<scalar_t>(),  // [N', 3]
-            query_width.data<scalar_t>(),   // [N',]
-            points.data<scalar_t>(),        // [N, 3]
-            point_attrs.data<scalar_t>(),   // [N, C]
-            node2point_index.data<signedindex_t>(),
-            node2point_indexstart.data<signedindex_t>(),
-            node_children_list.data<signedindex_t>(),
-            node_attrs.data<scalar_t>(),
-            node_is_leaf_list.data<bool>(),
-            node_half_w_list.data<scalar_t>(),
-            node_reppoints.data<scalar_t>(),
-            num_points_in_node.data<signedindex_t>(),
-            out_attrs.data<scalar_t>(),           // [N, 3]
+            query_points.data_ptr<scalar_t>(),  // [N', 3]
+            query_width.data_ptr<scalar_t>(),   // [N',]
+            points.data_ptr<scalar_t>(),        // [N, 3]
+            point_attrs.data_ptr<scalar_t>(),   // [N, C]
+            node2point_index.data_ptr<signedindex_t>(),
+            node2point_indexstart.data_ptr<signedindex_t>(),
+            node_children_list.data_ptr<signedindex_t>(),
+            node_attrs.data_ptr<scalar_t>(),
+            node_is_leaf_list.data_ptr<bool>(),
+            node_half_w_list.data_ptr<scalar_t>(),
+            node_reppoints.data_ptr<scalar_t>(),
+            num_points_in_node.data_ptr<signedindex_t>(),
+            out_attrs.data_ptr<scalar_t>(),           // [N, 3]
             num_queries
         );
     }));

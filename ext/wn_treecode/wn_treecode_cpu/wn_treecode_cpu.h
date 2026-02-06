@@ -24,6 +24,7 @@ SOFTWARE.
 
 
 #include <vector>
+#include <cstdint>
 
 #define ALLOWED_MAX_DEPTH 15
 #define SPATIAL_DIM 3
@@ -31,7 +32,7 @@ SOFTWARE.
 #define THREADS_PER_BLOCK 1024
 #define TREECODE_THRESHOLD 2.0f
 
-typedef long signedindex_t;
+typedef int64_t signedindex_t;
 
 //////////////////// tree utils ////////////////////
 template<typename scalar_t>

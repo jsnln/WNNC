@@ -2,6 +2,9 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
 setup(
     name='wn_treecode',
+    version='0.0.1',
+    author='Siyou Lin',
+    author_email='linsy21@mails.tsinghua.edu.cn',
     packages=['wn_treecode'],
     ext_modules=[
         CUDAExtension('wn_treecode._cuda', [

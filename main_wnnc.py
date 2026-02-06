@@ -14,6 +14,7 @@ time_start = time()
 parser = argparse.ArgumentParser()
 parser.add_argument('input', type=str, help='input point cloud file name, must have extension xyz/ply/obj/npy')
 parser.add_argument('--width_config', type=str, choices=['l0', 'l1', 'l2', 'l3', 'l4', 'l5', 'custom'], required=True, help='choose a proper preset width config, or set it as custom, and use --wsmin --wsmax to define custom widths')
+parser.add_argument('--dtype', type=str, choices=['float', 'double'], default='float', help='float (default) should be enough for most cases. use double if it is insufficient')
 parser.add_argument('--wsmax', type=float, default=0.01, help='only works if --width_config custom is specified')
 parser.add_argument('--wsmin', type=float, default=0.04, help='only works if --width_config custom is specified')
 parser.add_argument('--iters', type=int, default=40, help='number of iterations')
@@ -46,7 +47,7 @@ points_normalized = (points_unnormalized - bbox_center) * (2 / (bbox_len * bbox_
 
 points_normalized = torch.from_numpy(points_normalized).contiguous().float()
 normals = torch.zeros_like(points_normalized).contiguous().float()
-b = torch.ones(points_normalized.shape[0], 1) * 0.5
+b = torch.ones(points_normalized.shape[0], 1).float() * 0.5
 widths = torch.ones_like(points_normalized[:, 0])    # we support per-point smoothing width, but do not use it in experiments
 
 if not args.cpu:

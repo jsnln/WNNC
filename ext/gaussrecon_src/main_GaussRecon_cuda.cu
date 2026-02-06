@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
 
     signedindex_t num_nodes = serialized_tree_and_node2point_index.first.num_nodes;
     signedindex_t attr_dim = SPATIAL_DIM;	// normal dim
-    assert(attr_dim == SPATIAL_DIM or attr_dim == 1);
+    assert((attr_dim == SPATIAL_DIM) || (attr_dim == 1));
 
 	/// why am I using new? because we have no std::vector<bool>
 	bool * scattered_mask_ptr_d; // = new bool[num_nodes];

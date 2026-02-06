@@ -24,14 +24,15 @@ SOFTWARE.
 
 
 #include <vector>
+#include <cstdint>
 
 #define ALLOWED_MAX_DEPTH 15
 #define SPATIAL_DIM 3
 #define NUM_OCT_CHILDREN 8
-#define THREADS_PER_BLOCK 1024
+#define THREADS_PER_BLOCK 512
 #define TREECODE_THRESHOLD 2.0f
 
-typedef long signedindex_t;
+typedef int64_t signedindex_t;
 
 // CUDA kernel declarations
 template<typename scalar_t>

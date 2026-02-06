@@ -26,9 +26,10 @@ SOFTWARE.
 #include "wn_treecode_cpu.h"
 #include <vector>
 #include <fstream>
+#include <cstdint>
 
 #define NUM_OCT_CHILDREN 8
-typedef long signedindex_t;
+typedef int64_t signedindex_t;
 
 
 int color_list[11*3] = {
