@@ -45,9 +45,10 @@ bbox_center = (points_unnormalized.min(0) + points_unnormalized.max(0)) / 2.
 bbox_len = (points_unnormalized.max(0) - points_unnormalized.min(0)).max()
 points_normalized = (points_unnormalized - bbox_center) * (2 / (bbox_len * bbox_scale))
 
-points_normalized = torch.from_numpy(points_normalized).contiguous().float()
-normals = torch.zeros_like(points_normalized).contiguous().float()
-b = torch.ones(points_normalized.shape[0], 1).float() * 0.5
+dtype = torch.float32 if args.dtype == 'float' else torch.float64
+points_normalized = torch.from_numpy(points_normalized).contiguous().to(dtype)
+normals = torch.zeros_like(points_normalized).contiguous().to(dtype)
+b = torch.ones(points_normalized.shape[0], 1).to(dtype) * 0.5
 widths = torch.ones_like(points_normalized[:, 0])    # we support per-point smoothing width, but do not use it in experiments
 
 if not args.cpu:
